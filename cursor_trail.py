@@ -5,6 +5,8 @@ import gpu
 from gpu_extras.batch import batch_for_shader
 import random
 import time
+from mathutils import Vector
+
 bl_info = {
     "name": "Cursor Trail",
     "blender": (4, 2, 0),
@@ -15,6 +17,7 @@ bl_info = {
     "tracker_url": "https://github.com/jamestruhlar/blender_cursor_trail.git",
     "support": "COMMUNITY",
 }
+
 class CursorTrailPreferences(AddonPreferences):
     bl_idname = __name__
     cursor_trail: BoolProperty(
@@ -28,7 +31,7 @@ class CursorTrailPreferences(AddonPreferences):
         description="Length of the trail",
         default=50,
         min=10,
-        max=400
+        max=500
     )
     trail_width: FloatProperty(
         name="Width",
@@ -62,6 +65,7 @@ class CursorTrailPreferences(AddonPreferences):
         min=0.0,
         max=1.0
     )
+
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "cursor_trail")
@@ -70,12 +74,14 @@ class CursorTrailPreferences(AddonPreferences):
         layout.prop(self, "trail_jitter")
         layout.prop(self, "trail_start_color")
         layout.prop(self, "trail_end_color")
+
 class VIEW3D_MT_cursor_trail_context_menu(Menu):
     bl_label = "Options"
     def draw(self, context):
         layout = self.layout
         layout.operator("view3d.cursor_trail_reset", text="Reset to Default Values")
         layout.operator("view3d.cursor_trail_save_default", text="Save as Default")
+
 class VIEW3D_OT_cursor_trail_reset(Operator):
     bl_idname = "view3d.cursor_trail_reset"
     bl_label = "Reset to default"
@@ -84,6 +90,7 @@ class VIEW3D_OT_cursor_trail_reset(Operator):
         preferences = context.preferences.addons[__name__].preferences
         preferences.reset_preferences()
         return {'FINISHED'}
+    
 class VIEW3D_PT_cursor_trail(Panel):
     bl_label = "Cursor Trail"
     bl_idname = "VIEW3D_PT_cursor_trail"
@@ -104,38 +111,62 @@ class VIEW3D_PT_cursor_trail(Panel):
     def draw_header_preset(self, _context):
         layout = self.layout
         layout.menu("VIEW3D_MT_cursor_trail_context_menu", icon='DOWNARROW_HLT', text="")
+
 trail_points = []
 draw_handler = None
 last_mouse_move_time = 0
 last_mouse_pos = (0, 0)
 last_jitter = 0.0
+is_moving = False
+fade_start_time = 0
+
 def draw_cursor_trail():
     if len(trail_points) < 2:
         return
+    
     preferences = bpy.context.preferences.addons[__name__].preferences
     shader = gpu.shader.from_builtin('UNIFORM_COLOR')
     gpu.state.blend_set('ALPHA')
     start_color = preferences.trail_start_color
     end_color = preferences.trail_end_color
+    
+    current_time = time.time()
+    fade_duration = 0.5
+    
     for i in range(len(trail_points) - 1):
         start = trail_points[i][0]
         end = trail_points[i + 1][0]
+        point_time = trail_points[i][1]
         t = 1 - i / (len(trail_points) - 1)
+        
         interpolated_color = (
             start_color[0] * t + end_color[0] * (1 - t),
             start_color[1] * t + end_color[1] * (1 - t),
             start_color[2] * t + end_color[2] * (1 - t),
             start_color[3] * t + end_color[3] * (1 - t)
         )
+        
+        age = current_time - point_time
+        fade_factor = max(0, 1 - age / fade_duration)
+        
+        final_color = (
+            interpolated_color[0],
+            interpolated_color[1],
+            interpolated_color[2],
+            interpolated_color[3] * fade_factor
+        )
+        
         shader.bind()
-        shader.uniform_float("color", interpolated_color)
+        shader.uniform_float("color", final_color)
         gpu.state.line_width_set(preferences.trail_width)
         batch = batch_for_shader(shader, 'LINES', {"pos": [start, end]})
         batch.draw(shader)
+    
     gpu.state.line_width_set(1.0)
     gpu.state.blend_set('NONE')
+
 def update_trail(region, mouse_pos):
-    global trail_points, last_mouse_move_time, last_mouse_pos, last_jitter
+    global trail_points, last_mouse_move_time, last_mouse_pos, last_jitter, is_moving, fade_start_time
     preferences = bpy.context.preferences.addons[__name__].preferences
     region_x = mouse_pos[0] - region.x
     region_y = mouse_pos[1] - region.y
@@ -144,19 +175,36 @@ def update_trail(region, mouse_pos):
     dy = mouse_pos[1] - last_mouse_pos[1]
     distance = (dx**2 + dy**2)**0.5
     movement_speed = distance / max(current_time - last_mouse_move_time, 1e-6) if last_mouse_move_time != 0 else 0.0
-    if movement_speed > 0:
-        last_jitter = preferences.trail_jitter
-        jittered_x = region_x + random.uniform(-last_jitter, last_jitter)
-        jittered_y = region_y + random.uniform(-last_jitter, last_jitter)
+
+    movement_threshold = 1.0
+    is_moving = movement_speed > movement_threshold
+
+    if is_moving:
+        direction = Vector((dx, dy)).normalized() if distance != 0 else Vector((0, 0))
+        
+        offset = direction * -3.0
+        jitter_amount = preferences.trail_jitter
+        jittered_x = region_x + offset.x + random.uniform(-jitter_amount, jitter_amount)
+        jittered_y = region_y + offset.y + random.uniform(-jitter_amount, jitter_amount)
+
         trail_points.append(((jittered_x, jittered_y), current_time, movement_speed))
+
+        fade_start_time = current_time
     else:
         last_jitter = max(0, last_jitter - 0.01)
+
     last_mouse_move_time = current_time
     last_mouse_pos = mouse_pos
-    trail_points = [p for p in trail_points if current_time - p[1] < 1]
+
+    fade_duration = 0.5
+    trail_points = [p for p in trail_points if current_time - p[1] < fade_duration]
+
     max_points = preferences.trail_length
     if len(trail_points) > max_points:
         trail_points = trail_points[-max_points:]
+
+
+
 class CursorTrailPreferences(AddonPreferences):
     def reset_preferences(self):
         self.cursor_trail = False
@@ -166,6 +214,7 @@ class CursorTrailPreferences(AddonPreferences):
         self.trail_start_color = (0.0, 0.1, 1.0, 0.0)
         self.trail_end_color = (1.0, 0.3, 0.0, 0.75)
     bl_idname = __name__
+
     cursor_trail: BoolProperty(
         name="Cursor Trail",
         description="Enable or disable cursor trail",
@@ -177,7 +226,7 @@ class CursorTrailPreferences(AddonPreferences):
         description="Length of the trail",
         default=50,
         min=10,
-        max=400
+        max=500
     )
     trail_width: FloatProperty(
         name="Width",
@@ -211,6 +260,7 @@ class CursorTrailPreferences(AddonPreferences):
         min=0.0,
         max=1.0
     )
+
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "cursor_trail")
@@ -219,6 +269,7 @@ class CursorTrailPreferences(AddonPreferences):
         layout.prop(self, "trail_jitter")
         layout.prop(self, "trail_start_color")
         layout.prop(self, "trail_end_color")
+
 def update_cursor_trail(self, context):
     global draw_handler
     if self.cursor_trail:
@@ -231,10 +282,12 @@ def update_cursor_trail(self, context):
             draw_handler = None
         global trail_points
         trail_points.clear()
+
 class VIEW3D_OT_cursor_trail(Operator):
     bl_idname = "view3d.cursor_trail"
     bl_label = "Cursor Trail"
     _timer = None
+
     def modal(self, context, event):
         preferences = context.preferences.addons[__name__].preferences
         if preferences.cursor_trail:
@@ -256,6 +309,7 @@ class VIEW3D_OT_cursor_trail(Operator):
                                 area.tag_redraw()
                                 break
                         break
+        
             return {'PASS_THROUGH'}
         else:
             context.window_manager.event_timer_remove(self._timer)
@@ -268,6 +322,7 @@ class VIEW3D_OT_cursor_trail(Operator):
             return {'RUNNING_MODAL'}
         else:
             return {'FINISHED'}
+        
 class VIEW3D_PT_cursor_trail(Panel):
     bl_label = "Cursor Trail"
     bl_idname = "VIEW3D_PT_cursor_trail"
@@ -288,11 +343,14 @@ class VIEW3D_PT_cursor_trail(Panel):
     def draw_header(self, context):
         layout = self.layout
         layout.operator("wm.call_menu", text="", icon='DOWNARROW_HLT').name = "VIEW3D_MT_cursor_trail_context_menu"
+
 @bpy.app.handlers.persistent
+
 def load_handler(dummy):
     preferences = bpy.context.preferences.addons[__name__].preferences
     if preferences.cursor_trail:
         update_cursor_trail(preferences, bpy.context)
+
 def register():
     bpy.utils.register_class(CursorTrailPreferences)
     bpy.utils.register_class(VIEW3D_OT_cursor_trail)
@@ -300,6 +358,7 @@ def register():
     bpy.utils.register_class(VIEW3D_MT_cursor_trail_context_menu)
     bpy.utils.register_class(VIEW3D_OT_cursor_trail_reset)
     bpy.app.handlers.load_post.append(load_handler)
+
 def unregister():
     global draw_handler
     if draw_handler is not None:
@@ -311,6 +370,7 @@ def unregister():
     bpy.utils.unregister_class(VIEW3D_MT_cursor_trail_context_menu)
     bpy.utils.unregister_class(VIEW3D_OT_cursor_trail_reset)
     bpy.app.handlers.load_post.remove(load_handler)
+
 if __name__ == "__main__":
     register()
 
