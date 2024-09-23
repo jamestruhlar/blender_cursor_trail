@@ -11,7 +11,8 @@ bl_info = {
     "category": "3D View",
     "description": "Adds a cursor trail effect in the 3D View.",
     "author": "mdcrtv",
-    "version": (0, 5),
+    "version": (0, 0),
+    "tracker_url": "https://github.com/jamestruhlar/blender_cursor_trail.git",
     "support": "COMMUNITY",
 }
 class CursorTrailPreferences(AddonPreferences):
