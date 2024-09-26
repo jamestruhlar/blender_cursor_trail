@@ -13,5 +13,4 @@ https://github.com/user-attachments/assets/ef4fdbe4-f197-4b40-a4e4-14bf1bb8279b
 https://docs.blender.org/manual/en/latest/editors/preferences/addons.html
 
 ### Known issues
-- Seems to only do around 100 points even when length is maxed out.
 - May effect color when trail is visible under the cursor when picking.
